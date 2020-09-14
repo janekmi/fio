@@ -6,11 +6,14 @@
  *   for the InfiniBand, RoCE and iWARP protocols.
  * Supports both persistent and volatile memory.
  *
+ * It's client part of the engine. See also: librpma_server
+ *
  * You will need the Linux RDMA software installed
  * either from your Linux distributor or directly from openfabrics.org:
- * http://www.openfabrics.org/downloads/OFED/
+ * https://www.openfabrics.org/downloads/OFED
  *
- * You will need the librpma library installed
+ * You will need the librpma library installed:
+ * https://github.com/pmem/rpma
  *
  * Exchanging steps of librpma ioengine control messages:
  *XXX
@@ -51,6 +54,7 @@
 
 #define FIO_RDMA_MAX_IO_DEPTH    512
 
+/* XXX: to be removed (?) */
 enum librpma_io_mode {
 	FIO_RDMA_UNKNOWN = 0,
 	FIO_RDMA_MEM_WRITE,
@@ -59,87 +63,30 @@ enum librpma_io_mode {
 	FIO_RDMA_CHA_RECV
 };
 
-struct librpmaio_options {
+struct fio_librpmaio_options {
 	struct thread_data *td;
-	unsigned int port;
-	enum librpma_io_mode verb;
-	char *bindname;
+	char *server_port;
+	char *server_ip;
 };
 
-static int str_hostname_cb(void *data, const char *input)
-{
-	struct librpmaio_options *o = data;
-
-	if (o->td->o.filename)
-		free(o->td->o.filename);
-	o->td->o.filename = strdup(input);
-	return 0;
-}
-
 static struct fio_option options[] = {
-	/* remove */
 	{
-		.name	= "hostname",
-		.lname	= "librpma engine hostname",
+		.name	= "server_ip",
+		.lname	= "librpma engine server ip",
 		.type	= FIO_OPT_STR_STORE,
-		.cb	= str_hostname_cb,
-		.help	= "Hostname for RDMA IO engine",
-		.category = FIO_OPT_C_ENGINE,
-		.group	= FIO_OPT_G_LIBRPMA,
-	},
-
-	/* rename bindname -> server:listen_ip, client: server_ip */
-	{
-		.name	= "bindname",
-		.lname	= "librpma engine bindname",
-		.type	= FIO_OPT_STR_STORE,
-		.off1	= offsetof(struct librpmaio_options, bindname),
-		.help	= "Bind for RDMA IO engine",
+		.off1	= offsetof(struct fio_librpmaio_options, server_ip),
+		.help	= "Server's IP to use for RDMA connections",
 		.def    = "",
 		.category = FIO_OPT_C_ENGINE,
 		.group	= FIO_OPT_G_LIBRPMA,
 	},
-
-	/* rename: server:listen_port, client:server_port */
 	{
-		.name	= "port",
-		.lname	= "librpma engine port",
-		.type	= FIO_OPT_INT,
-		.off1	= offsetof(struct librpmaio_options, port),
-		.minval	= 1,
-		.maxval	= 65535,
-		.help	= "Port to use for RDMA connections",
-		.category = FIO_OPT_C_ENGINE,
-		.group	= FIO_OPT_G_LIBRPMA,
-	},
-
-	/* remove */
-	{
-		.name	= "verb",
-		.lname	= "RDMA engine verb",
-		.alias	= "proto",
-		.type	= FIO_OPT_STR,
-		.off1	= offsetof(struct librpmaio_options, verb),
-		.help	= "RDMA engine verb",
-		.def	= "write",
-		.posval = {
-			  { .ival = "write",
-			    .oval = FIO_RDMA_MEM_WRITE,
-			    .help = "Memory Write",
-			  },
-			  { .ival = "read",
-			    .oval = FIO_RDMA_MEM_READ,
-			    .help = "Memory Read",
-			  },
-			  { .ival = "send",
-			    .oval = FIO_RDMA_CHA_SEND,
-			    .help = "Posted Send",
-			  },
-			  { .ival = "recv",
-			    .oval = FIO_RDMA_CHA_RECV,
-			    .help = "Posted Receive",
-			  },
-		},
+		.name	= "server_port",
+		.lname	= "librpma engine server port",
+		.type	= FIO_OPT_STR_STORE,
+		.off1	= offsetof(struct fio_librpmaio_options, server_port),
+		.help	= "Server's port to use for RDMA connections",
+		.def    = "",
 		.category = FIO_OPT_C_ENGINE,
 		.group	= FIO_OPT_G_LIBRPMA,
 	},
@@ -1084,7 +1031,7 @@ static int fio_librpmaio_setup_connect(struct thread_data *td, const char *host,
 				    unsigned short port)
 {
 	struct librpmaio_data *rd = td->io_ops_data;
-	struct librpmaio_options *o = td->eo;
+	struct fio_librpmaio_options *o = td->eo;
 	struct sockaddr_storage addrb;
 	struct ibv_recv_wr *bad_wr;
 	int err;
@@ -1154,7 +1101,7 @@ static int fio_librpmaio_setup_connect(struct thread_data *td, const char *host,
 static int fio_librpmaio_setup_listen(struct thread_data *td, short port)
 {
 	struct librpmaio_data *rd = td->io_ops_data;
-	struct librpmaio_options *o = td->eo;
+	struct fio_librpmaio_options *o = td->eo;
 	struct ibv_recv_wr *bad_wr;
 	int state = td->runstate;
 
@@ -1245,7 +1192,7 @@ static int compat_options(struct thread_data *td)
 	// retains backwards compatibility with it. Note we do not
 	// support setting the bindname option is this legacy mode.
 
-	struct librpmaio_options *o = td->eo;
+	struct fio_librpmaio_options *o = td->eo;
 	char *modep, *portp;
 	char *filename = td->o.filename;
 
@@ -1295,7 +1242,7 @@ bad_host:
 static int fio_librpmaio_init(struct thread_data *td)
 {
 	struct librpmaio_data *rd = td->io_ops_data;
-	struct librpmaio_options *o = td->eo;
+	struct fio_librpmaio_options *o = td->eo;
 	int ret;
 
 	if (td_rw(td)) {
@@ -1452,7 +1399,7 @@ FIO_STATIC struct ioengine_ops ioengine = {
 	.close_file		= fio_librpmaio_close_file,
 	.flags			= FIO_DISKLESSIO | FIO_UNIDIR | FIO_PIPEIO,
 	.options		= options,
-	.option_struct_size	= sizeof(struct librpmaio_options),
+	.option_struct_size	= sizeof(struct fio_librpmaio_options),
 };
 
 static void fio_init fio_librpmaio_register(void)
