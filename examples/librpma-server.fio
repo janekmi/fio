@@ -1,0 +1,7 @@
+# Example RDMA server job
+[global]
+ioengine=librpma_server
+listen_ip=192.168.13.207
+listen_port=7204
+size=100g
+#mem=mmap:/var/tmp/tg
