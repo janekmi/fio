@@ -50,6 +50,7 @@
 #include <rdma/rdma_cma.h>
 
 #define FIO_RDMA_MAX_IO_DEPTH    512
+#define KILOBYTE 1024
 
 enum librpma_io_mode {
 	FIO_RDMA_UNKNOWN = 0,
@@ -201,6 +202,8 @@ struct librpmaio_data {
 
 	struct rpma_mr_local *mr_local;
 
+	size_t dst_offset;
+
 	/* not used */
 	int is_client;
 	enum librpma_io_mode librpma_protocol;
@@ -210,12 +213,14 @@ struct librpmaio_data {
 	struct ibv_recv_wr rq_wr;
 	struct ibv_sge recv_sgl;
 	struct librpma_info_blk recv_buf;
-	struct ibv_mr *recv_mr;
+	// struct ibv_mr *recv_mr;
+	struct rpma_mr_remote* recv_mr;//this is dst_mr
 
 	struct ibv_send_wr sq_wr;
 	struct ibv_sge send_sgl;
 	struct librpma_info_blk send_buf;
-	struct ibv_mr *send_mr;
+	// struct ibv_mr *send_mr;
+	struct rpma_mr_local* send_mr;//this is src_mr
 
 	struct ibv_comp_channel *channel;
 	struct ibv_cq *cq;
@@ -536,48 +541,6 @@ err1:
 	return 1;
 }
 
-static int fio_librpmaio_setup_control_msg_buffers(struct thread_data *td)
-{
-	struct librpmaio_data *rd = td->io_ops_data;
-
-	rd->recv_mr = ibv_reg_mr(rd->pd, &rd->recv_buf, sizeof(rd->recv_buf),
-				 IBV_ACCESS_LOCAL_WRITE);
-	if (rd->recv_mr == NULL) {
-		log_err("fio: recv_buf reg_mr failed: %m\n");
-		return 1;
-	}
-
-	rd->send_mr = ibv_reg_mr(rd->pd, &rd->send_buf, sizeof(rd->send_buf),
-				 0);
-	if (rd->send_mr == NULL) {
-		log_err("fio: send_buf reg_mr failed: %m\n");
-		ibv_dereg_mr(rd->recv_mr);
-		return 1;
-	}
-
-	/* setup work request */
-	/* recv wq */
-	rd->recv_sgl.addr = (uint64_t) (unsigned long)&rd->recv_buf;
-	rd->recv_sgl.length = sizeof(rd->recv_buf);
-	rd->recv_sgl.lkey = rd->recv_mr->lkey;
-	rd->rq_wr.sg_list = &rd->recv_sgl;
-	rd->rq_wr.num_sge = 1;
-	rd->rq_wr.wr_id = FIO_RDMA_MAX_IO_DEPTH;
-
-	/* send wq */
-	rd->send_sgl.addr = (uint64_t) (unsigned long)&rd->send_buf;
-	rd->send_sgl.length = sizeof(rd->send_buf);
-	rd->send_sgl.lkey = rd->send_mr->lkey;
-
-	rd->sq_wr.opcode = IBV_WR_SEND;
-	rd->sq_wr.send_flags = IBV_SEND_SIGNALED;
-	rd->sq_wr.sg_list = &rd->send_sgl;
-	rd->sq_wr.num_sge = 1;
-	rd->sq_wr.wr_id = FIO_RDMA_MAX_IO_DEPTH;
-
-	return 0;
-}
-
 static int get_next_channel_event(struct thread_data *td,
 				  struct rdma_event_channel *channel,
 				  enum rdma_cm_event_type wait_event)
@@ -735,128 +698,39 @@ again:
 	return r;
 }
 
-static int fio_librpmaio_send(struct thread_data *td, struct io_u **io_us,
-			   unsigned int nr)
-{
-	struct librpmaio_data *rd = td->io_ops_data;
-	struct ibv_send_wr *bad_wr;
-#if 0
-	enum ibv_wc_opcode comp_opcode;
-	comp_opcode = IBV_WC_RDMA_WRITE;
-#endif
-	int i;
-	long index;
-	struct librpma_io_u_data *r_io_u_d;
-
-	r_io_u_d = NULL;
-
-	for (i = 0; i < nr; i++) {
-		/* RDMA_WRITE or RDMA_READ */
-		switch (rd->librpma_protocol) {
-		case FIO_RDMA_MEM_WRITE:
-			/* compose work request */
-			r_io_u_d = io_us[i]->engine_data;
-			index = __rand(&rd->rand_state) % rd->rmt_nr;
-			r_io_u_d->sq_wr.opcode = IBV_WR_RDMA_WRITE;
-			r_io_u_d->sq_wr.wr.rdma.rkey = rd->rmt_us[index].rkey;
-			r_io_u_d->sq_wr.wr.rdma.remote_addr = \
-				rd->rmt_us[index].buf;
-			r_io_u_d->sq_wr.sg_list->length = io_us[i]->buflen;
-			break;
-		case FIO_RDMA_MEM_READ:
-			/* compose work request */
-			r_io_u_d = io_us[i]->engine_data;
-			index = __rand(&rd->rand_state) % rd->rmt_nr;
-			r_io_u_d->sq_wr.opcode = IBV_WR_RDMA_READ;
-			r_io_u_d->sq_wr.wr.rdma.rkey = rd->rmt_us[index].rkey;
-			r_io_u_d->sq_wr.wr.rdma.remote_addr = \
-				rd->rmt_us[index].buf;
-			r_io_u_d->sq_wr.sg_list->length = io_us[i]->buflen;
-			break;
-		case FIO_RDMA_CHA_SEND:
-			r_io_u_d = io_us[i]->engine_data;
-			r_io_u_d->sq_wr.opcode = IBV_WR_SEND;
-			r_io_u_d->sq_wr.send_flags = IBV_SEND_SIGNALED;
-			break;
-		default:
-			log_err("fio: unknown rdma protocol - %d\n",
-				rd->librpma_protocol);
-			break;
-		}
-
-		if (ibv_post_send(rd->qp, &r_io_u_d->sq_wr, &bad_wr) != 0) {
-			log_err("fio: ibv_post_send fail: %m\n");
-			return -1;
-		}
-
-		dprint_io_u(io_us[i], "fio_librpmaio_send");
-	}
-
-	/* wait for completion
-	   rdma_poll_wait(td, comp_opcode); */
-
-	return i;
-}
-
-static int fio_librpmaio_recv(struct thread_data *td, struct io_u **io_us,
-			   unsigned int nr)
-{
-	struct librpmaio_data *rd = td->io_ops_data;
-	struct ibv_recv_wr *bad_wr;
-	struct librpma_io_u_data *r_io_u_d;
-	int i;
-
-	i = 0;
-	if (rd->librpma_protocol == FIO_RDMA_CHA_RECV) {
-		/* post io_u into recv queue */
-		for (i = 0; i < nr; i++) {
-			r_io_u_d = io_us[i]->engine_data;
-			if (ibv_post_recv(rd->qp, &r_io_u_d->rq_wr, &bad_wr) !=
-			    0) {
-				log_err("fio: ibv_post_recv fail: %m\n");
-				return 1;
-			}
-		}
-	} else if ((rd->librpma_protocol == FIO_RDMA_MEM_READ)
-		   || (rd->librpma_protocol == FIO_RDMA_MEM_WRITE)) {
-		/* re-post the rq_wr */
-		if (ibv_post_recv(rd->qp, &rd->rq_wr, &bad_wr) != 0) {
-			log_err("fio: ibv_post_recv fail: %m\n");
-			return 1;
-		}
-
-		librpma_poll_wait(td, IBV_WC_RECV);
-
-		dprint(FD_IO, "fio: recv FINISH message\n");
-		td->done = 1;
-		return 0;
-	}
-
-	return i;
-}
-
 static enum fio_q_status fio_librpmaio_queue(struct thread_data *td,
 					  struct io_u *io_u)
 {
-	struct librpmaio_data *rd = td->io_ops_data;
+	struct librpmaio_data* rd = td->io_ops_data;
 
 	fio_ro_check(td, io_u);
 
 	if (rd->io_u_queued_nr == (int)td->o.iodepth)
 		return FIO_Q_BUSY;
 
-	rd->io_us_queued[rd->io_u_queued_nr] = io_u;
+	rd->io_us_queued[rd->io_u_queued_nr] = io_u; //RPMA_WRITE,need count queue number(write operations)
 	rd->io_u_queued_nr++;
 
-	dprint_io_u(io_u, "fio_librpmaio_queue");
+	dprint_io_u(io_u, "fio_rdmaio_queue");
+
+	/*here we get conn*/
+	//client_connect(peer, addr, port, NULL, &conn);
+
+	/*src start point and size, right now is 0 and 1k*/
+	switch (io_u->ddir) {
+	case DDIR_WRITE:
+		rpma_write(rd->conn, rd->recv_mr, rd->dst_offset, rd->send_mr, 0, KILOBYTE, RPMA_F_COMPLETION_ON_ERROR, NULL);
+		break;
+	}
 
 	return FIO_Q_QUEUED;
 }
 
+#define FLUSH_ID	(void *)0xF01D
 static void fio_librpmaio_queued(struct thread_data *td, struct io_u **io_us,
 			      unsigned int nr)
 {
-	struct librpmaio_data *rd = td->io_ops_data;
+	struct librpmaio_data* rd = td->io_ops_data;
 	struct timespec now;
 	unsigned int i;
 
@@ -866,7 +740,7 @@ static void fio_librpmaio_queued(struct thread_data *td, struct io_u **io_us,
 	fio_gettime(&now, NULL);
 
 	for (i = 0; i < nr; i++) {
-		struct io_u *io_u = io_us[i];
+		struct io_u* io_u = io_us[i];
 
 		/* queued -> flight */
 		rd->io_us_flight[rd->io_u_flight_nr] = io_u;
@@ -879,8 +753,8 @@ static void fio_librpmaio_queued(struct thread_data *td, struct io_u **io_us,
 
 static int fio_librpmaio_commit(struct thread_data *td)
 {
-	struct librpmaio_data *rd = td->io_ops_data;
-	struct io_u **io_us;
+	struct librpmaio_data* rd = td->io_ops_data;
+	struct io_u** io_us;
 	int ret;
 
 	if (!rd->io_us_queued)
@@ -889,10 +763,15 @@ static int fio_librpmaio_commit(struct thread_data *td)
 	io_us = rd->io_us_queued;
 	do {
 		/* RDMA_WRITE or RDMA_READ */
-		if (rd->is_client)
-			ret = fio_librpmaio_send(td, io_us, rd->io_u_queued_nr);
-		else if (!rd->is_client)
-			ret = fio_librpmaio_recv(td, io_us, rd->io_u_queued_nr);
+		if (rd->is_client) {
+			// ret = fio_rdmaio_send(td, io_us, rd->io_u_queued_nr);
+			rpma_flush(rd->conn, rd->recv_mr, rd->dst_offset, KILOBYTE,
+				RPMA_FLUSH_TYPE_PERSISTENT, RPMA_F_COMPLETION_ALWAYS,
+				FLUSH_ID);
+			ret = 1;
+		}
+		//else if (!rd->is_client)
+			//ret = fio_rdmaio_recv(td, io_us, rd->io_u_queued_nr);
 		else
 			ret = 0;	/* must be a SYNC */
 
@@ -902,7 +781,8 @@ static int fio_librpmaio_commit(struct thread_data *td)
 			rd->io_u_queued_nr -= ret;
 			io_us += ret;
 			ret = 0;
-		} else
+		}
+		else
 			break;
 	} while (rd->io_u_queued_nr);
 
@@ -1138,9 +1018,6 @@ static int fio_librpmaio_setup_connect(struct thread_data *td, const char *host,
 	if (fio_librpmaio_setup_qp(td) != 0)
 		return 1;
 
-	if (fio_librpmaio_setup_control_msg_buffers(td) != 0)
-		return 1;
-
 	/* post recv buf */
 	err = ibv_post_recv(rd->qp, &rd->rq_wr, &bad_wr);
 	if (err != 0) {
@@ -1189,9 +1066,6 @@ static int fio_librpmaio_setup_listen(struct thread_data *td, short port)
 	}
 
 	if (fio_librpmaio_setup_qp(td) != 0)
-		return 1;
-
-	if (fio_librpmaio_setup_control_msg_buffers(td) != 0)
 		return 1;
 
 	/* post recv buf */
