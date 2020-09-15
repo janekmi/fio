@@ -1,6 +1,6 @@
 # Example RDMA client job
 [global]
-ioengine=librpma
+ioengine=librpma_client
 server_ip=[server_ip]
 server_port=[server_port]
 bs=1m

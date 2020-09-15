@@ -95,7 +95,7 @@ ifdef CONFIG_RDMA
   ENGINES += rdma
 endif
 ifdef CONFIG_LIBRPMA
-  librpma_SRCS = engines/librpma.c
+  librpma_SRCS = engines/librpma_client.c
   librpma_SRCS += engines/librpma_server.c
   librpma_LIBS = -lrpma
   ENGINES += librpma
