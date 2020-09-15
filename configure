@@ -161,6 +161,7 @@ libhdfs="no"
 pmemblk="no"
 devdax="no"
 pmem="no"
+rpma_engines="no"
 cuda="no"
 disable_lex=""
 disable_pmem="no"
@@ -2161,6 +2162,32 @@ if test "$libpmem" = "yes" && test "$disable_pmem" = "no"; then
 fi
 
 ##########################################
+# Check whether we have librpma
+if test "$librpma" != "yes" ; then
+  librpma="no"
+fi
+cat > $TMPC << EOF
+#include <librpma.h>
+int main(int argc, char **argv)
+{
+  int rc;
+  struct rpma_conn_cfg *cfg;
+  rc = rpma_conn_cfg_new(&cfg);
+  return 0;
+}
+EOF
+if compile_prog "" "-lrpma" "librpma"; then
+  librpma="yes"
+fi
+print_config "librpma" "$librpma"
+
+# Turn librpma_* ioengines on/off
+# XXX: consider `&& test "$disable_pmem" = "no"`
+if test "$librpma" = "yes" ; then
+  rpma_engines="yes"
+fi
+
+##########################################
 # Report whether pmemblk engine is enabled
 print_config "PMDK pmemblk engine" "$pmemblk"
 
@@ -2171,6 +2198,10 @@ print_config "PMDK dev-dax engine" "$devdax"
 ##########################################
 # Report whether libpmem engine is enabled
 print_config "PMDK libpmem engine" "$pmem"
+
+##########################################
+# Report whether librpma_* engines are enabled
+print_config "librpma_* engines" "$rpma_engines"
 
 ##########################################
 # Check whether we support DDN's IME
@@ -2773,7 +2804,7 @@ fi
 if test "$libverbs" = "yes" -a "$rdmacm" = "yes" ; then
   output_sym "CONFIG_RDMA"
 fi
-if test "$libverbs" = "yes" -a "$rdmacm" = "yes" ; then
+if test "$rpma_engines" = "yes" -a "$libverbs" = "yes" -a "$rdmacm" = "yes" ; then
   output_sym "CONFIG_LIBRPMA"
 fi
 if test "$clock_gettime" = "yes" ; then
