@@ -48,12 +48,15 @@
 #include "../fio.h"
 #include "../hash.h"
 #include "../optgroup.h"
-
 #include <librpma.h>
+
 #include <rdma/rdma_cma.h>
+
+#include "librpma_engine.h"
 
 #define FIO_RDMA_MAX_IO_DEPTH    512
 #define KILOBYTE 1024
+
 
 /* XXX: to be removed (?) */
 enum librpma_io_mode {
@@ -355,9 +358,38 @@ static int fio_librpmaio_post_init(struct thread_data *td)
 static void fio_librpmaio_cleanup(struct thread_data *td)
 {
 	struct librpmaio_data *rd = td->io_ops_data;
+	int ret;
+	enum rpma_conn_event conn_event = RPMA_CONN_UNDEFINED;
+	/* just in case a connection has not been established */
+	if (rd->conn) {
+		/* wait for the connection to being closed */
+		if ((ret = rpma_conn_next_event(rd->conn, &conn_event))) {
+			rpma_td_verror(td, ret, "rpma_conn_next_event");
+		} else if (conn_event != RPMA_CONN_CLOSED) {
+			td_vmsg(td, 1, "an unexpected event returned",
+					"rpma_conn_next_event");
+		}
 
+		/* disconnect the connection */
+		if ((ret = rpma_conn_disconnect(rd->conn)))
+			rpma_td_verror(td, ret, "rpma_conn_disconnect");
+
+		/* delete the connection object */
+		if ((ret = rpma_conn_delete(&rd->conn)))
+			rpma_td_verror(td, ret, "rpma_conn_delete");
+	}
+
+	/* just in case peer has not been created */
+	if (rd->peer) {
+		/* delete the peer object */
+		if ((ret = rpma_peer_delete(&rd->peer)))
+			rpma_td_verror(td, ret, "rpma_peer_delete");
+	}
+	rpma_mr_remote_delete(&rd->mr_remote);
+	free(rd->mr_local);
 	if (rd)
 		free(rd);
+	td->io_ops_data = NULL;
 }
 
 static int fio_librpmaio_setup(struct thread_data *td)

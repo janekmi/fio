@@ -16,9 +16,7 @@
 #include "../optgroup.h"
 
 #include <librpma.h>
-
-#define rpma_td_verror(td, err, func) \
-	td_vmsg((td), (err), rpma_err_2str(err), (func))
+#include "librpma_engine.h"
 
 #define HARDCODED_RQ_SIZE 1
 #define HARDCODED_CQ_SIZE 1
