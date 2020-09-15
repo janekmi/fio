@@ -1118,77 +1118,83 @@ bad_host:
 static int fio_librpmaio_init(struct thread_data *td)
 {
 	struct librpmaio_data *rd = td->io_ops_data;
-	struct fio_librpma_client_options *o = td->eo;
+	struct fio_librpmaio_options *o = td->eo;
+	struct ibv_context *dev = NULL;
+	struct rpma_conn_req *req = NULL;
+	enum rpma_conn_event conn_event = RPMA_CONN_UNDEFINED;
+	const char *msg = "Hello server!";
+	struct rpma_conn_private_data pdata;
+	rpma_mr_descriptor *desc;
+	size_t src_size = 0;
 	int ret;
 
-	if (td_rw(td)) {
-		log_err("fio: rdma connections must be read OR write\n");
-		return 1;
-	}
-	if (td_random(td)) {
-		log_err("fio: RDMA network IO can't be random\n");
-		return 1;
-	}
+	/* Get IBV context for the server IP */
+	ret = rpma_utils_get_ibv_context(o->server_ip, RPMA_UTIL_IBV_CONTEXT_REMOTE,
+			                 &dev);
+	if (ret)
+                return ret;
 
-	if (compat_options(td))
-		return 1;
+	/* Create new peer */
+	ret = rpma_peer_new(dev, &rd->peer);
+	if (ret)
+                return ret;
 
-	if (!o->server_port) {
-		log_err("fio: no port has been specified which is required "
-			"for the rdma engine\n");
-		return 1;
-	}
+	/* Create a connection request */
+	ret = rpma_conn_req_new(rd->peer, o->server_ip,
+				o->server_port, NULL, &req);
+	if (ret)
+		goto err_peer_delete;
 
-	if (check_set_rlimits(td))
-		return 1;
+	/* connect the connection request and obtain the connection object */
+	pdata.ptr = (void *)msg;
+	pdata.len = (strlen(msg) + 1) * sizeof(char);
+	ret = rpma_conn_req_connect(&req, &pdata, &rd->conn);
+	if (ret)
+		goto err_req_delete;
 
-	/*rd->librpma_protocol = o->verb;*/
-	rd->cq_event_num = 0;
-
-	rd->cm_channel = rdma_create_event_channel();
-	if (!rd->cm_channel) {
-		log_err("fio: rdma_create_event_channel fail: %m\n");
-		return 1;
-	}
-
-	ret = rdma_create_id(rd->cm_channel, &rd->cm_id, rd, RDMA_PS_TCP);
+	/* wait for the connection to establish */
+	ret = rpma_conn_next_event(rd->conn, &conn_event);
 	if (ret) {
-		log_err("fio: rdma_create_id fail: %m\n");
-		return 1;
+		goto err_conn_delete;
+	} else if (conn_event != RPMA_CONN_ESTABLISHED) {
+		goto err_conn_delete;
 	}
 
-	if ((rd->librpma_protocol == FIO_RDMA_MEM_WRITE) ||
-	    (rd->librpma_protocol == FIO_RDMA_MEM_READ)) {
-		rd->rmt_us =
-			malloc(FIO_RDMA_MAX_IO_DEPTH * sizeof(struct remote_u));
-		memset(rd->rmt_us, 0,
-			FIO_RDMA_MAX_IO_DEPTH * sizeof(struct remote_u));
-		rd->rmt_nr = 0;
-	}
+	/* here you can use the newly established connection */
+	(void) rpma_conn_get_private_data(rd->conn, &pdata);
 
-	rd->io_us_queued = malloc(td->o.iodepth * sizeof(struct io_u *));
-	memset(rd->io_us_queued, 0, td->o.iodepth * sizeof(struct io_u *));
-	rd->io_u_queued_nr = 0;
+	/*
+	 * Create a remote memory registration structure from the received
+	 * descriptor.
+	 */
+	desc = pdata.ptr;
+	ret = rpma_mr_remote_from_descriptor(desc, &rd->mr_remote);
+	if (ret)
+		goto err_conn_disconnect;
 
-	rd->io_us_flight = malloc(td->o.iodepth * sizeof(struct io_u *));
-	memset(rd->io_us_flight, 0, td->o.iodepth * sizeof(struct io_u *));
-	rd->io_u_flight_nr = 0;
+	/* get the remote memory region size */
+	ret = rpma_mr_remote_get_size(rd->mr_remote, &src_size);
+	if (ret)
+		goto err_mr_remote_delete;
 
-	rd->io_us_completed = malloc(td->o.iodepth * sizeof(struct io_u *));
-	memset(rd->io_us_completed, 0, td->o.iodepth * sizeof(struct io_u *));
-	rd->io_u_completed_nr = 0;
+	return 0;
 
-	if (td_read(td)) {	/* READ as the server */
-		rd->is_client = 0;
-		td->flags |= TD_F_NO_PROGRESS;
-		/* server rd->rdma_buf_len will be setup after got request */
-		ret = fio_librpmaio_setup_listen(td, o->server_port);
-	} else {		/* WRITE as the client */
-		rd->is_client = 1;
-		ret = fio_librpmaio_setup_connect(td, td->o.filename, o->server_port);
-	}
+err_mr_remote_delete:
+	/* delete the remote memory region's structure */
+	(void) rpma_mr_remote_delete(&rd->mr_remote);
+err_conn_disconnect:
+	(void) rpma_conn_disconnect(rd->conn);
+err_conn_delete:
+	(void) rpma_conn_delete(&rd->conn);
+err_req_delete:
+	if (req)
+		(void) rpma_conn_req_delete(&req);
+err_peer_delete:
+	(void) rpma_peer_delete(&rd->peer);
+
 	return ret;
 }
+
 static int fio_librpmaio_post_init(struct thread_data *td)
 {
 	unsigned int max_bs;
