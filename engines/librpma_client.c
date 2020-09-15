@@ -655,19 +655,16 @@ static enum fio_q_status fio_librpmaio_queue(struct thread_data *td,
 	if (rd->io_u_queued_nr == (int)td->o.iodepth)
 		return FIO_Q_BUSY;
 
-	rd->io_us_queued[rd->io_u_queued_nr] = io_u; //RPMA_WRITE,need count queue number(write operations)
+	/* RPMA_WRITE,need count queue number(write operations) */
+	rd->io_us_queued[rd->io_u_queued_nr] = io_u;
 	rd->io_u_queued_nr++;
 
 	dprint_io_u(io_u, "fio_rdmaio_queue");
 
-	/*here we get conn*/
-	//client_connect(peer, addr, port, NULL, &conn);
-
-	/*src start point and size, right now is 0 and 1k*/
-	switch (io_u->ddir) {
-	case DDIR_WRITE:
-		rpma_write(rd->conn, rd->recv_mr, rd->dst_offset, rd->send_mr, 0, KILOBYTE, RPMA_F_COMPLETION_ON_ERROR, NULL);
-		break;
+	/* XXX src start point and size, right now is 0 and 1k*/
+	if (io_u->ddir == DDIR_WRITE) {
+		rpma_write(rd->conn, rd->recv_mr, rd->dst_offset, rd->send_mr,
+				0, KILOBYTE, RPMA_F_COMPLETION_ON_ERROR, NULL);
 	}
 
 	return FIO_Q_QUEUED;
@@ -1109,10 +1106,6 @@ static int compat_options(struct thread_data *td)
 	*/
 
 	return 0;
-
-bad_host:
-	log_err("fio: bad rdma host/port/protocol: %s\n", td->o.filename);
-	return 1;
 }
 
 static int fio_librpmaio_init(struct thread_data *td)
@@ -1182,10 +1175,10 @@ static int fio_librpmaio_init(struct thread_data *td)
 		rd->is_client = 0;
 		td->flags |= TD_F_NO_PROGRESS;
 		/* server rd->rdma_buf_len will be setup after got request */
-		ret = fio_librpmaio_setup_listen(td, o->server_port);
+		ret = fio_librpmaio_setup_listen(td, 0);
 	} else {		/* WRITE as the client */
 		rd->is_client = 1;
-		ret = fio_librpmaio_setup_connect(td, td->o.filename, o->server_port);
+		ret = fio_librpmaio_setup_connect(td, td->o.filename, 0);
 	}
 	return ret;
 }
