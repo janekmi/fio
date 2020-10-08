@@ -43,6 +43,11 @@ case "$TRAVIS_OS_NAME" in
 	)
 	sudo apt-get -qq update
 	sudo apt-get install --no-install-recommends -qq -y "${pkgs[@]}"
+
+	# DEBUG
+	pwd
+	ci/travis-install-librpma.sh
+
 	;;
     "osx")
 	brew update >/dev/null 2>&1
