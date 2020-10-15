@@ -87,6 +87,8 @@ struct client_data {
 	int io_u_queued_nr;
 	struct io_u **io_us_flight;
 	int io_u_flight_nr;
+	int io_u_fligh_start;
+	int io_u_fligh_stop;
 	struct io_u **io_us_completed;
 	int io_u_completed_nr;
 };
@@ -365,7 +367,8 @@ static int client_commit(struct thread_data *td)
 			memcpy(&io_u->issue_time, &now, sizeof(now));
 
 		/* move executed io_us from queued[] to flight[] */
-		cd->io_us_flight[cd->io_u_flight_nr] = io_u;
+		cd->io_us_flight[cd->io_u_fligh_stop] = io_u;
+		cd->io_u_fligh_stop = (cd->io_u_fligh_stop + 1) % td->o.iodepth;
 		cd->io_u_flight_nr++;
 
 		/*
@@ -397,7 +400,7 @@ static int client_getevents(struct thread_data *td, unsigned int min,
 	int cmpl_num = 0;
 	/* helpers */
 	struct io_u *io_u;
-	int i;
+	int i, idx;
 	int ret;
 
 	/* wait for a completion */
@@ -419,7 +422,8 @@ static int client_getevents(struct thread_data *td, unsigned int min,
 	/* look for an io_u being completed */
 	memcpy(&io_u_index, &cmpl.op_context, sizeof(unsigned int));
 	for (i = 0; i < cd->io_u_flight_nr; ++i) {
-		if (cd->io_us_flight[i]->index == io_u_index) {
+		idx = (cd->io_u_fligh_start + i) % td->o.iodepth;
+		if (cd->io_us_flight[idx]->index == io_u_index) {
 			cmpl_num = i + 1;
 			break;
 		}
@@ -436,6 +440,7 @@ static int client_getevents(struct thread_data *td, unsigned int min,
 	/* move completed io_us to the completed in-memory queue */
 	for (i = 0; i < cmpl_num; ++i) {
 		/* get and prepare io_u */
+		idx = (cd->io_u_fligh_start + i) % td->o.iodepth;
 		io_u = cd->io_us_flight[i];
 		io_u->error = io_us_error;
 
@@ -445,8 +450,7 @@ static int client_getevents(struct thread_data *td, unsigned int min,
 	}
 
 	/* remove completed io_us from the flight queue */
-	for (i = cmpl_num; i < cd->io_u_flight_nr; ++i)
-		cd->io_us_flight[i - cmpl_num] = cd->io_us_flight[i];
+	cd->io_u_fligh_start = (cd->io_u_fligh_start + cmpl_num) % td->o.iodepth;
 	cd->io_u_flight_nr -= cmpl_num;
 
 	return cmpl_num;
