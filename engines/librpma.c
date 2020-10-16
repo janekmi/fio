@@ -99,6 +99,7 @@ static int client_init(struct thread_data *td)
 	struct client_options *o = td->eo;
 	struct client_data *cd;
 	struct ibv_context *dev = NULL;
+	struct rpma_conn_cfg *cfg = NULL;
 	struct rpma_conn_req *req = NULL;
 	enum rpma_conn_event event;
 	struct rpma_conn_private_data pdata;
@@ -147,12 +148,18 @@ static int client_init(struct thread_data *td)
 		goto err_free_io_us_completed;
 	}
 
+	(void) rpma_conn_cfg_new(&cfg);
+	(void) rpma_conn_cfg_set_sq_size(cfg, td->o.iodepth);
+	(void) rpma_conn_cfg_set_cq_size(cfg, td->o.iodepth);
+
 	/* create a connection request */
-	ret = rpma_conn_req_new(cd->peer, o->hostname, o->port, NULL, &req);
+	ret = rpma_conn_req_new(cd->peer, o->hostname, o->port, cfg, &req);
 	if (ret) {
 		rpma_td_verror(td, ret, "rpma_conn_req_new");
 		goto err_peer_delete;
 	}
+
+	(void) rpma_conn_cfg_delete(&cfg);
 
 	/* connect the connection request and obtain the connection object */
 	ret = rpma_conn_req_connect(&req, NULL, &cd->conn);

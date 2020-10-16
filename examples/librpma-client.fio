@@ -1,13 +1,12 @@
 # Example of the librpma client job
-
 # The engine requires some options to work correctly:
 # - thread XXX some initiation steps are synchronized between threads
 # - create_serialize=0 forces specific initiation sequence
 
 [global]
 ioengine=librpma_client
-hostname=[IP address the server is listening on] 
-port=[port the server is listening on]
+hostname=192.168.100.101
+port=7204
 thread
 
 # The client will get a remote memory region description after establishing
@@ -15,9 +14,11 @@ thread
 
 [client]
 create_serialize=0
-iomem_align=[page size]
-iodepth=[total # of ious]
-iodepth_batch_submit=[# of ious to submit at once]
-readwrite=[read/randread]
-blocksize=[block size]
-size=[XXX a space for a single thread?]
+iomem_align=4096
+iodepth=100
+iodepth_batch=1
+readwrite=read
+blocksize=8
+#ramp_time=15
+time_based
+runtime=10
