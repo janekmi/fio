@@ -1,13 +1,16 @@
 # Example rdma client job
 [global]
 ioengine=rdma
-hostname=[hostname]
-port=[port]
-verb=[read/write/send/recv]
-bs=1m
-size=100g
+hostname=192.168.100.101
+port=7204
+verb=read
+bs=8
+size=100MiB
 
 [sender]
 rw=write
-iodepth=1
-iodepth_batch_complete=1
+iodepth=100
+iodepth_batch=1
+ramp_time=15
+time_based
+runtime=60
