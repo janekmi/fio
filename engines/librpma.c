@@ -397,11 +397,7 @@ static int client_commit(struct thread_data *td)
 	return 0;
 }
 
-/*
- * XXX current implementation ignores provided min and max
- */
-static int client_getevents(struct thread_data *td, unsigned int min,
-				unsigned int max, const struct timespec *t)
+static int client_getevent_process(struct thread_data *td)
 {
 	struct client_data *cd = td->io_ops_data;
 	struct rpma_completion cmpl;
@@ -412,17 +408,14 @@ static int client_getevents(struct thread_data *td, unsigned int min,
 	int cmpl_num = 0;
 	/* helpers */
 	struct io_u *io_u;
-	int i;
 	int ret;
-
-	/* wait for a completion */
-	if ((ret = rpma_conn_completion_wait(cd->conn))) {
-		rpma_td_verror(td, ret, "rpma_conn_completion_wait");
-		return -1;
-	}
+	int i;
 
 	/* get the completion */
 	if ((ret = rpma_conn_completion_get(cd->conn, &cmpl))) {
+		if (ret == RPMA_E_NO_COMPLETION)
+			return 0;
+
 		rpma_td_verror(td, ret, "rpma_conn_completion_get");
 		return -1;
 	}
@@ -465,6 +458,35 @@ static int client_getevents(struct thread_data *td, unsigned int min,
 	cd->io_u_flight_nr -= cmpl_num;
 
 	return cmpl_num;
+}
+
+/*
+ * XXX current implementation ignores provided min and max
+ */
+static int client_getevents(struct thread_data *td, unsigned int min,
+				unsigned int max, const struct timespec *t)
+{
+	struct client_data *cd = td->io_ops_data;
+	int cmpl_num_total = 0;
+	int cmpl_num;
+	int ret;
+	int i = 0;
+
+	/* wait for a completion */
+	if ((ret = rpma_conn_completion_wait(cd->conn))) {
+		rpma_td_verror(td, ret, "rpma_conn_completion_wait");
+		return -1;
+	}
+
+	do {
+		cmpl_num = client_getevent_process(td);
+		cmpl_num_total += cmpl_num;
+		i++;
+	} while (cmpl_num != 0);
+
+	(void) rpma_conn_completion_done(cd->conn);
+
+	return cmpl_num_total;
 }
 
 static struct io_u *client_event(struct thread_data *td, int event)
