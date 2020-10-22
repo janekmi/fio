@@ -516,6 +516,23 @@ static struct io_u *client_event(struct thread_data *td, int event)
 	return io_u;
 }
 
+static enum fio_q_status client_sync(struct thread_data *td,
+					  struct io_u *io_u)
+{
+	struct io_u *io_u_done;
+
+	(void) client_queue(td, io_u);
+	(void) client_commit(td);
+	(void) client_getevents(td, 1, 1, NULL);
+	io_u_done = client_event(td, 1);
+	if (io_u_done != io_u) {
+		td_vmsg(td, -1, "cannot complet sync", "client_sync");
+		return FIO_Q_BUSY;
+	}
+
+	return FIO_Q_COMPLETED;
+}
+
 static char *client_errdetails(struct io_u *io_u)
 {
 	/* get the string representation of an error */
@@ -537,7 +554,7 @@ FIO_STATIC struct ioengine_ops ioengine_client = {
 	.post_init		= client_post_init,
 	.setup			= client_setup,
 	.open_file		= client_open_file,
-	.queue			= client_queue,
+	.queue			= client_sync,
 	.commit			= client_commit,
 	.getevents		= client_getevents,
 	.event			= client_event,
@@ -545,7 +562,7 @@ FIO_STATIC struct ioengine_ops ioengine_client = {
 	.close_file		= client_close_file,
 	.cleanup		= client_cleanup,
 	/* XXX flags require consideration */
-	.flags			= FIO_DISKLESSIO | FIO_UNIDIR | FIO_PIPEIO,
+	.flags			= FIO_DISKLESSIO | FIO_UNIDIR | FIO_PIPEIO | FIO_SYNCIO,
 	.options		= fio_client_options,
 	.option_struct_size	= sizeof(struct client_options),
 };
