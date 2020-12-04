@@ -555,12 +555,26 @@ static enum fio_q_status client_queue(struct thread_data *td,
 					  struct io_u *io_u)
 {
 	struct client_data *cd = td->io_ops_data;
+	int flags = RPMA_F_COMPLETION_ON_ERROR;
+	int ret;
 
-	if (cd->io_u_queued_nr == (int)td->o.iodepth)
+	/* XXX no more than a single batch queued */
+	if (cd->io_u_queued_nr == (int)td->o.iodepth || cd->io_u_queued_nr == (int)td->o.iodepth_batch)
 		return FIO_Q_BUSY;
 
 	if (td->o.sync_io)
 		return client_queue_sync(td, io_u);
+
+	if (io_u->ddir == DDIR_READ) {
+		if (cd->io_u_queued_nr == td->o.iodepth_batch - 1)
+			flags = RPMA_F_COMPLETION_ALWAYS;
+		/* post an RDMA read operation */
+		if ((ret = client_io_read(td, io_u, flags)))
+			return FIO_Q_BUSY;
+	} else {
+		log_err("unsupported IO mode: %s\n", io_ddir_name(io_u->ddir));
+		return FIO_Q_BUSY;
+	}
 
 	/* io_u -> queued[] */
 	cd->io_us_queued[cd->io_u_queued_nr] = io_u;
@@ -587,11 +601,7 @@ static int client_commit(struct thread_data *td)
 		struct io_u *io_u = cd->io_us_queued[i];
 
 		if (io_u->ddir == DDIR_READ) {
-			if (i == cd->io_u_queued_nr - 1)
-				flags = RPMA_F_COMPLETION_ALWAYS;
-			/* post an RDMA read operation */
-			if ((ret = client_io_read(td, io_u, flags)))
-				return -1;
+			/* NOP */
 		} else if (io_u->ddir == DDIR_WRITE) {
 			/*
 			 * XXX this implementation works only for readwrite=read,write
