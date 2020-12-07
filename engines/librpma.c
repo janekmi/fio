@@ -742,14 +742,14 @@ static int client_getevents(struct thread_data *td, unsigned int min,
 			if (cmpl_num_total >= min)
 				break;
 
-			/* too few completions - wait */
-			ret = rpma_conn_completion_wait(cd->conn);
-			if (ret == 0 || ret == RPMA_E_NO_COMPLETION)
-				continue;
-
-			/* an error occurred */
-			rpma_td_verror(td, ret, "rpma_conn_completion_wait");
-			return -1;
+//			/* too few completions - wait */
+//			ret = rpma_conn_completion_wait(cd->conn);
+//			if (ret == 0 || ret == RPMA_E_NO_COMPLETION)
+//				continue;
+//
+//			/* an error occurred */
+//			rpma_td_verror(td, ret, "rpma_conn_completion_wait");
+//			return -1;
 		} else {
 			/* an error occurred */
 			return -1;
