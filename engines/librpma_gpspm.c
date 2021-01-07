@@ -127,6 +127,7 @@ struct client_data {
 	uint32_t msg_num;
 	uint32_t msg_curr;
 	uint32_t msg_send_completed;
+	uint32_t msg_recv_completed;
 	struct rpma_mr_local *msg_mr;
 
 	/* remote workspace description */
@@ -415,6 +416,7 @@ static int client_post_init(struct thread_data *td)
 	/* message buffers initialization and registration */
 	cd->msg_curr = 0;
 	cd->msg_send_completed = 0;
+	cd->msg_recv_completed = 0;
 	io_us_msgs_size = cd->msg_num * IO_U_BUF_LEN;
 	if ((ret = posix_memalign((void **)&cd->io_us_msgs,
 			page_size, io_us_msgs_size))) {
@@ -683,8 +685,10 @@ static enum fio_q_status client_queue_sync(struct thread_data *td,
 
 		if (cmpl.op == RPMA_OP_SEND)
 			++cd->msg_send_completed;
-		else if (cmpl.op == RPMA_OP_RECV)
+		else if (cmpl.op == RPMA_OP_RECV) {
+			++cd->msg_recv_completed;
 			break;
+		}
 	} while (1);
 
 	/* unpack a response from the received buffer */
@@ -714,6 +718,12 @@ static enum fio_q_status client_queue(struct thread_data *td,
 					  struct io_u *io_u)
 {
 	struct client_data *cd = td->io_ops_data;
+
+	/* make sure completions are not staying behind */
+	uint32_t min_completed = min(cd->msg_send_completed, cd->msg_recv_completed);
+	if (cd->msg_curr - min_completed == cd->msg_num)
+		/* all message buffers are in use */
+		return FIO_Q_BUSY;
 
 	if (cd->io_u_queued_nr == (int)td->o.iodepth)
 		return FIO_Q_BUSY;
@@ -863,6 +873,7 @@ static int client_getevent_process(struct thread_data *td)
 
 		return 0;
 	}
+	++cd->msg_recv_completed;
 
 	/* unpack a response from the received buffer */
 	flush_resp = gpspm_flush_response__unpack(NULL, cmpl.byte_len,
