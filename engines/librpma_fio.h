@@ -19,6 +19,7 @@
 #include "../fio.h"
 #include "../optgroup.h"
 
+#include <libpmem2.h>
 #include <librpma.h>
 
 /* servers' and clients' common */
@@ -68,8 +69,11 @@ struct librpma_fio_mem {
 	/* memory buffer */
 	char *mem_ptr;
 
-	/* size of the mapped persistent memory */
-	size_t size_mmap;
+	/* the persistent memory resource */
+	int pmem_fd;
+	struct pmem2_source *pmem_src;
+	struct pmem2_map *pmem_map;
+	pmem2_persist_fn pmem_persist;
 };
 
 char *librpma_fio_allocate_dram(struct thread_data *td, size_t size,

@@ -15,7 +15,7 @@
 
 #include "librpma_fio.h"
 
-#include <libpmem.h>
+#include <libpmem2.h>
 
 struct fio_option librpma_fio_options[] = {
 	{
@@ -92,7 +92,6 @@ char *librpma_fio_allocate_dram(struct thread_data *td, size_t size,
 	}
 
 	mem->mem_ptr = mem_ptr;
-	mem->size_mmap = 0;
 
 	return mem_ptr;
 }
@@ -100,10 +99,11 @@ char *librpma_fio_allocate_dram(struct thread_data *td, size_t size,
 char *librpma_fio_allocate_pmem(struct thread_data *td, const char *filename,
 		size_t size, struct librpma_fio_mem *mem)
 {
-	size_t size_mmap = 0;
+	struct pmem2_config *cfg;
+	size_t pmem_size = 0;
 	char *mem_ptr = NULL;
-	int is_pmem = 0;
-	size_t ws_offset;
+	size_t ws_offset = (td->thread_number - 1) * size;
+	int ret;
 
 	if (size % page_size) {
 		log_err("fio: size (%zu) is not aligned to page size (%zu)\n",
@@ -111,57 +111,104 @@ char *librpma_fio_allocate_pmem(struct thread_data *td, const char *filename,
 		return NULL;
 	}
 
-	ws_offset = (td->thread_number - 1) * size;
-
 	if (!filename) {
 		log_err("fio: filename is not set\n");
 		return NULL;
 	}
 
-	/* map the file */
-	mem_ptr = pmem_map_file(filename, 0 /* len */, 0 /* flags */,
-			0 /* mode */, &size_mmap, &is_pmem);
-	if (mem_ptr == NULL) {
-		log_err("fio: pmem_map_file(%s) failed\n", filename);
-		/* pmem_map_file() sets errno on failure */
-		td_verror(td, errno, "pmem_map_file");
+	if ((ret = pmem2_config_new(&cfg))) {
+		td_verror(td, -ret, "pmem2_config_new");
 		return NULL;
 	}
 
-	/* pmem is expected */
-	if (!is_pmem) {
-		log_err("fio: %s is not located in persistent memory\n",
-			filename);
-		goto err_unmap;
+	if ((ret = pmem2_config_set_required_store_granularity(cfg,
+			PMEM2_GRANULARITY_CACHE_LINE))) {
+		td_verror(td, -ret, "pmem2_config_set_required_store_granularity");
+		goto err_cfg_set;
+	}
+
+	if ((ret = pmem2_config_set_offset(cfg, ws_offset))) {
+		td_verror(td, -ret, "pmem2_config_set_offset");
+		goto err_cfg_set;
+	}
+
+	if ((ret = pmem2_config_set_length(cfg, size))) {
+		td_verror(td, -ret, "pmem2_config_set_length");
+		goto err_cfg_set;
+	}
+
+	if ((mem->pmem_fd = open(filename, O_RDWR)) < 0) {
+		td_verror(td, errno, "open");
+		goto err_open;
+	}
+
+	if (pmem2_source_from_fd(&mem->pmem_src, mem->pmem_fd)) {
+		pmem2_perror("pmem2_source_from_fd");
+		goto err_source_from_fd;
+	}
+
+	/* map the file */
+	if ((ret = pmem2_map(cfg, mem->pmem_src, &mem->pmem_map))) {
+		td_verror(td, -ret, "pmem2_map_new");
+		goto err_map;
+	}
+
+	mem_ptr = pmem2_map_get_address(mem->pmem_map);
+	if (mem_ptr == NULL) {
+		log_err("fio: pmem2_map_get_address() returned NULL\n");
+		goto err_map_validate;
 	}
 
 	/* check size of allocated persistent memory */
-	if (size_mmap < ws_offset + size) {
-		log_err(
-			"fio: %s is too small to handle so many threads (%zu < %zu)\n",
-			filename, size_mmap, ws_offset + size);
-		goto err_unmap;
+	pmem_size = pmem2_map_get_size(mem->pmem_map);
+	if (pmem_size < size) {
+		log_err("fio: pmem2_map_get_size() size is too small"
+				"(%zu < %zu)\n", pmem_size, size);
+		goto err_map_validate;
 	}
 
-	log_info("fio: size of memory mapped from the file %s: %zu\n",
-		filename, size_mmap);
+	mem->pmem_persist = pmem2_get_persist_fn(mem->pmem_map);
+	if (mem->pmem_persist == NULL) {
+		log_err("fio: pmem2_get_persist_fn() returned NULL\n");
+		goto err_map_validate;
+	}
+
+	log_info(
+		"fio: size of memory mapped from the file %s: %zu at offset %zu\n",
+		filename, pmem_size, ws_offset);
 
 	mem->mem_ptr = mem_ptr;
-	mem->size_mmap = size_mmap;
 
-	return mem_ptr + ws_offset;
+	return mem_ptr;
 
-err_unmap:
-	(void) pmem_unmap(mem_ptr, size_mmap);
+err_map_validate:
+	(void) pmem2_unmap(&mem->pmem_map);
+
+err_map:
+	(void) pmem2_source_delete(&mem->pmem_src);
+
+err_source_from_fd:
+	(void) close(mem->pmem_fd);
+
+err_open:
+	mem->pmem_fd = 0;
+
+err_cfg_set:
+	pmem2_config_delete(&cfg);
+
 	return NULL;
 }
 
 void librpma_fio_free(struct librpma_fio_mem *mem)
 {
-	if (mem->size_mmap)
-		(void) pmem_unmap(mem->mem_ptr, mem->size_mmap);
-	else
+	if (mem->pmem_fd) {
+		/* XXX error handling */
+		(void) pmem2_unmap(&mem->pmem_map);
+		(void) pmem2_source_delete(&mem->pmem_src);
+		(void) close(mem->pmem_fd);
+	} else {
 		free(mem->mem_ptr);
+	}
 }
 
 #define LIBRPMA_FIO_RETRY_MAX_NO	10
